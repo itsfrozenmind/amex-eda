@@ -1,0 +1,13 @@
+.venv/
+.jupyter_token
+.mcp.json
+jupyter.log
+.ipynb_checkpoints/
+.DS_Store
+.jupyter/
+.jupyter_ystore.db
+
+# Raw/derived customer data — never pushed to GitHub
+dataset.csv
+dataset_clean.csv
+small_dataset.csv
