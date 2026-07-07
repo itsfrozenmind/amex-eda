@@ -1,5 +1,5 @@
 # Amex Profitability Model — Assumptions & Decisions Log
-Last updated: 2026-07-08 01:14 IST (Part 1 follow-up #3 — row-level deep dive stress-testing the share-of-wallet hypothesis)
+Last updated: 2026-07-08 02:02 IST (Part 1 final-pass — Groups A-D: redundancy resolution, definitional closures, formula-ready feature list)
 
 > **Maintenance rule:** this file is append-only history — never delete or rewrite a past row. When a decision changes, add a new row noting the supersession and update the "Last updated" timestamp above. Every script run, threshold choice, or finding that Part 2 might rely on gets logged here before moving on.
 
@@ -51,6 +51,8 @@ Last updated: 2026-07-08 01:14 IST (Part 1 follow-up #3 — row-level deep dive 
 | `engagement_score` (z-score composite of f12 + f22 + benefit_usage_count) | **Experimental, not yet in `dataset_clean.csv`** — used only to test the silent-churn hypothesis | Needed a single "disengagement" proxy since no ground-truth engagement label exists | Considered using f12 (logins) alone — rejected because it ignores email and benefit-usage signal, which showed the effect too |
 | `benefit_usage_count` (count of f13–f16 used at all) | Experimental, input to engagement_score | Simpler and more robust to f16's capping/floor quirks than summing raw amounts | Considered summing raw benefit amounts — rejected due to f16's very different scale swamping the others |
 | f6–f10 reframed as a **"share-of-wallet gap" / cross-sell opportunity signal** (not a revenue variable) | **Hypothesis, revised after 2026-07-08 deep dive** — candidate: `wallet_gap_flag` = (f6_f10_sum tercile=High) & (f5 tercile=Low) | 2026-07-08 segment test shows this group (Segment A) is low-risk and high-rewards-engagement like the "big spender" segment, but with modest spend on this card specifically. **Row-level deep dive (2026-07-08) narrows this considerably** — see Section 4 rows below: the gap is driven almost entirely by f7 (Other Spend, 65% of the sum) and f6 (Airlines, 16%), not all five categories; "other card ownership" proxies (f19/f20) correlate weakly and in the *wrong* direction; f6-f10 correlate most strongly with Amex's own rewards variables (f4/f21), not with anything indicating external card usage | Revised interpretation: more likely a **rewards-program-linked spend/engagement signal specific to f7 (and f6)**, structurally distinct from f5, than literal "spend routed to competitor cards." The low-risk finding for Segment A survives the deep dive (see Section 4) and remains usable — but the "share of wallet" *narrative* for why should be softened. Needs Human sign-off either way before use as a Part 2 modifier |
+| `lend_exposure` = average(f17, f18) | **Decided (2026-07-08)** — combine the redundant Lend Line pair into one feature using the mean, not the max | B2 test: avg has stronger residual correlation with f11 (r=-0.32, r²≈0.103) than max (r=-0.31, r²≈0.093) — evidence-based, not an arbitrary convention pick | Max was considered and tested directly, not just assumed — rejected because it's both weaker and discards the "both low" signal |
+| f3 (Collection Calls) entered alongside f11 (Risk Score) at full independent weight | **Rejected as originally implied** — f3 must be downweighted if f11 is also in the formula | A1 regression: f3 alone explains 34.7% of f11's variance (87% of what a 5-variable model explains) — treating both as fully independent inputs double-counts the same underlying risk signal | Exact downweighting mechanism (e.g. residualize f3 on f11 first, or drop f3 and trust f11 to capture it, or use f3 only for the specific high-risk quadrant identified in B1) is still open — see Section 7 |
 
 ## 4. Correlation Findings
 | Pair | Correlation | Interpretation | Action taken |
@@ -81,11 +83,51 @@ Last updated: 2026-07-08 01:14 IST (Part 1 follow-up #3 — row-level deep dive 
 | **DEEP DIVE (2026-07-08):** full f11 distribution within Segment A (not just the mean) | 51.35% of Segment A sits exactly at f11=0 (vs 33.0% population rate); 76.79% below 0.001. p90=0.005, p99=0.068, max=0.326 (rare tail) | Not bimodal / not a few outliers dragging the mean down — genuine majority-shift toward the risk floor. Raises the question of whether the floor itself is a real signal (tested next) | See Section 9b |
 | **DEEP DIVE (2026-07-08):** do f11=0 rows behave like genuinely low-risk customers on independent dimensions? | f11=0 group vs f11>0 group: f1 (Revolve) mean 429 vs 3,487 (8x lower); **f3 (Collection Calls) rate 0.56% vs 15.97% (28x lower)**; f17 (Lend Line) mean 28,858 vs 22,283 (higher) | f11=0 is **not** a meaningless capping artifact — it's behaviorally validated by three columns that have nothing to do with how f11 itself might be generated. Segment A's over-representation among f11=0 rows (51.4% vs 33.0%) is a real low-risk signal, not a generation-process artifact | Strengthens confidence in the Segment A low-risk finding specifically, even as the "why" (share of wallet vs rewards engagement) gets revised |
 | **DEEP DIVE (2026-07-08):** do f6-f10 correlate with ANYTHING besides each other (synthetic-noise test)? | All five consistently top-correlate with the **same two variables**: f4 (Rewards Balance, 0.22–0.33) and f21 (Rewards Redeemed, 0.25–0.35), plus f14/f16 (category-specific credits, 0.18–0.22) as secondary | **Rules out "arbitrary synthetic noise unrelated to everything"** — true independent random columns would show near-zero, directionless correlation with everything; instead there's a consistent, thematically sensible cluster around Amex's own rewards variables specifically (not around the "other card" proxies from the row above, which were much weaker) | Points toward f6-f10 (esp. f7/f6) being a real but structurally distinct spend/rewards-engagement measure, more likely tied to Amex's own rewards ecosystem than to competitor-card spend |
+| **A1 (2026-07-08): f11 reconstruction regression** — f11 ~ {f1,f2,f3,f17,f18} | R²=0.3993 overall. Nested models: f3 alone R²=0.347; adding f1,f2,f17,f18 only reaches 0.399 (+5pts). Raw coef for f3 stays ~0.14-0.16 across all nested specs — no severe multicollinearity | **f3 (Collection Calls) alone explains 87% of what these 5 variables jointly explain of f11's variance.** f3 is by far the dominant redundant raw variable with Risk Score — using both f3 and f11 at full independent weight in a formula risks substantial double-counting | Drives the DOWNWEIGHT decision in Section 2b |
+| **A1 (2026-07-08): f11 reconstruction regression** — f11 ~ {f13,f14,f15,f16} | R²=0.0827 — far lower than the f3-driven model above | **f13-f16 are NOT meaningfully redundant with f11** — safe to use as largely independent inputs, unlike f3 | No downweighting needed for f13-f16 vs f11 |
+| **A2 (2026-07-08): tenure-proxy search** | No dedicated account-age column exists in the 23-feature schema. Best available (imperfect) substitute, f17 (Lend Line), correlates only 0.09-0.14 with f13-f16 and is itself risk-driven (r=-0.30 with f11), not a clean tenure signal | Partial-correlation test controlling for f17: f13-f16 vs f2/f3 shift by <0.03 in every case (robust); **f19 vs f11 gets *stronger*, not weaker (0.067→0.183)** | No tenure confound found for the benefit-usage findings; f19-risk-amplifier finding is not explained away by this proxy — if anything it strengthens |
+| **A4 (2026-07-08): capping alignment across columns** | At-cap rates cluster into 3 tight bands: ~2.57-2.62% (f1,f5,f11,f12), ~1.98-2.00% (f6-f10), ~1.01-1.27% (f4,f17,f18,f21) — too tight to be organic coincidence | Row-level overlap of "who's at-cap" is mostly single-digit % across unrelated column groups (e.g. f11's at-cap rows share ~0% overlap with f6-f10/f17/f18's at-cap rows), except within already-correlated clusters (f17/f18: 29-32% overlap; f6-f10 cluster: 17-26%) | Supports **deliberate synthetic clipping applied per column-group** at fixed percentile thresholds, not universal "extreme customer" contamination. Capping is cluster-specific, tracking pre-existing correlation structure |
+| **B1 (2026-07-08): f2×f3 full 2×2 segmentation** — mean f11 (Risk) per quadrant | No-cancel/No-collection (n=353,834): 0.0208. **No-cancel/YES-collection, the 54,205-row group (n=53,377): 0.1713 — 8.2x baseline, highest of all 4 quadrants.** YES-cancel/No-collection (n=86,026): 0.0027 — lowest of all 4. YES-cancel/YES-collection (n=96): 0.0113. Mean f5 (Total Spend) barely differs across quadrants (3221-3530) | **Fully resolves Open Question #1** — the "collection call without cancellation call" group is a genuine, distinct high-risk segment (not a data artifact), consistent with collections being institution-initiated toward delinquent accounts independent of voluntary cancellation. "Cancel-only" customers are the *lowest*-risk quadrant — genuinely dissatisfied-but-healthy | Resolves Section 1's flagged f2/f3 inconsistency — see Section 7 |
+| **B2 (2026-07-08): f17/f18 combination — max vs average, residual corr with f11** | avg(f17,f18): Pearson -0.3205, Spearman -0.3706 (r²≈0.103). max(f17,f18): Pearson -0.3057, Spearman -0.3562 (r²≈0.093). avg is modestly but consistently the stronger, more informative combination | **Recommend average(f17,f18) as the combined Lend Exposure feature**, not max — evidence-based, not arbitrary; avg also avoids max's tendency to discard "both are low" signal | Feeds Section 2b final redundancy resolution and Section 3 |
+| **B3 (2026-07-08): f19>f20 mismatch, does it cluster with has_lend_line?** | Mismatch rate within has_lend_line=1 population: **99.66%**. Within has_lend_line=0 population: **1.42%**. (Population-wide 42.24% is just the blend of these two near-deterministic rates) | **Fully resolves Open Question re: f19/f20** — near-perfectly explained by product structure, not a random household pattern or data-generation quirk. Most plausible mechanism: f19 counts supplementary users across all products including lending, f20 only counts charge-card products, so lend-line holders mechanically show f19>f20 | Explains why controlling for f17 in A2 sharpened the f19-f11 relationship — f17-presence was a confound (lend-line holders are lower-risk *on average*), but the *size* of the f19-f20 gap still tracks with risk within that population |
+| **C1 (2026-07-08): at-cap tiebreaker diagnostic** | Within every capped column's at-cap segment, cross-reference variables (f5, f11, f1, f17) retain substantial spread — full population range, CVs mostly 0.5-5.6. One expected exception: within f18's at-cap rows, f17 is also tightly clustered (CV=0.05, since f17/f18 are r=0.90 correlated) | **Customers inside a "maxed out" band CAN be meaningfully differentiated using other variables** — no coarse tie is required anywhere except the already-known f17/f18 redundancy | Confirms capped rows don't need special coarse-tie handling in the formula, beyond the existing f17/f18 combination decision |
+
+## 2b. Final Redundancy Resolution — Consolidated (2026-07-08)
+| Group | Action | Method | Evidence |
+|---|---|---|---|
+| f17, f18 (Lend Line pair) | **COMBINE** | `lend_exposure = average(f17, f18)` | r=0.90/0.92; avg has stronger corr with f11 (-0.32) than max (-0.31) — see B2 above |
+| f6, f9 (Airlines/Lodging Spend) | FLAG, do not drop | Pearson+Spearman redundancy (0.70/0.71) | Both cross 0.6 — part of the f6-f10 intercorrelated cluster |
+| f7, f10 (Other/Dining Spend) | FLAG, do not drop | Pearson+Spearman redundancy (0.66/0.70) | Both cross 0.6 |
+| f8, f10 (Entertainment/Dining Spend) | FLAG, do not drop | Pearson+Spearman redundancy (0.62/0.70) | Both cross 0.6 |
+| f7, f8 (Other/Entertainment Spend) | FLAG, do not drop | Spearman-only redundancy (0.61 vs Pearson 0.57) | Non-linear coupling — keep both but note shared signal |
+| f9, f10 (Lodging/Dining Spend) | FLAG, do not drop | Spearman-only redundancy (0.61 vs Pearson 0.56) | Non-linear coupling |
+| **f3 (Collection Calls) vs f11 (Risk Score)** | **DOWNWEIGHT f3 if f11 also used** | Do not enter both at full independent weight | A1 — f3 alone explains 34.7% of f11's variance; 87% of what the full 5-variable model explains |
+| f13, f14, f15, f16 vs f11 | KEEP independent | No combination needed | A1 — only R²=0.083 jointly, not meaningfully redundant with Risk Score |
+| f4 (Rewards Balance) vs f21 (Redeemed) | KEEP independent | No combination needed | Pearson 0.15 / Spearman -0.04 (sign flips) — confirmed genuinely independent |
 
 ## 5. Attribute Classification (Sign & Weight)
-| Attribute | Category | Sign | Weight tier | Confidence (High/Med/Low) | Reasoning |
+**Note:** Weight tier is left TBD throughout — assigning actual numeric weights is the formula-fitting exercise itself (Part 2 proper) and hasn't started. Category, Sign, and Confidence below reflect the evidence gathered across all EDA rounds (Sections A-K plus this Group A-D pass).
+
+| Attribute | Category | Sign | Weight tier | Confidence | Reasoning |
 |---|---|---|---|---|---|
-| *(not yet started — this table is Part 2 scope; EDA/cleaning in Part 1 did not assign sign/weight to any attribute)* | | | | | |
+| f1 (Revolve Balance) | Risk cost (non-linear/accelerating) | Negative | TBD | High | Spearman 0.58 vs f11 (Pearson only 0.20 — non-linear, driven by f11's 33% zero-mass); monotonic ₹429→₹5,178 across risk quartiles. Classic liquidity-stress signature — should carry an accelerating penalty, not a flat interest-revenue credit |
+| f2 (Cancellation Calls, voluntary) | Weak, context-dependent signal | Slight negative | TBD | Medium | 2x2 test (B1): "cancel-only" quadrant is the *lowest*-risk of all four (f11=0.0027) — a dissatisfaction signal, not a risk one. Non-monotonic across risk quartiles (peaks at Q2-Q3, collapses at Q4) |
+| f3 (Collection Calls) | Dominant risk signal | Negative (strong) | **TBD — must be downweighted if f11 also used** | High | A1: explains 34.7% of f11's variance alone. B1: 8.2x higher risk in the "collection-only" quadrant (54,205 rows) — a genuine high-risk segment, not an artifact. See Section 2b |
+| f4 (Rewards Points Balance) | Positive engagement/profitability | Positive | TBD | High | Independent from f21 (confirmed via Pearson/Spearman sign flip); declines monotonically with risk quartile (104,489→22,541) |
+| f5 (Total Spend) | Core revenue | Positive | TBD | High | Primary spend metric; relatively flat across risk quartiles (3,936→3,137) — doesn't itself carry much risk signal, a separate axis from f11 |
+| f6, f9 (Airlines/Lodging Spend) | Rewards-linked engagement signal, structurally distinct from f5 | Positive but structurally separate from Total Spend | TBD | Medium | Correlates with f4/f21 (rewards), not with "other card" proxies; declines with risk quartile. Redundant with each other (0.70/0.71) — see Section 2b |
+| f7 (Other Spend) | Rewards-linked engagement signal — needs its own investigation | Positive but structurally separate from Total Spend | TBD | **Low-Medium** — flagged for dedicated investigation before use (Section 7) | Drives 65% of the f6-f10-vs-f5 gap alone; widest range and most negative values of any spend column; correlates with f4/f21, not external-card proxies |
+| f8, f10 (Entertainment/Dining Spend) | Rewards-linked engagement signal, structurally distinct from f5 | Positive but structurally separate from Total Spend | TBD | Medium | Same family as f6/f9 but smaller magnitude; f8/f9 are actually *smaller* than f5 (proportionate, like genuine subcategories) |
+| f11 (Average Risk Score) | Core risk input | Negative | TBD | High | Direct risk measure; primary driver of Section 5's whole logic. Do not double-count with f3 (Section 2b) |
+| f12 (Login Counts) | Engagement proxy | Positive (weak, non-monotonic) | TBD | Medium | Component of `engagement_score`; non-monotonic across risk quartiles (28.8→31.8→33.0→28.4) |
+| f13, f14, f15 (Lounge, Airline Credits, Cab Benefits) | Safety/engagement marker | Positive | TBD | High | Not redundant with f11 (A1: joint R²=0.083); all decline monotonically with risk quartile; negative correlation with both f2 and f3 (engaged=safer, sign-confirmed) |
+| f16 (Entertainment Credit Used) | Safety/engagement marker, but needs bounded/special treatment | Positive | TBD | Medium | Strongest of the four benefit vars (loss-aversion hypothesis holds specifically here) but 35% at-cap and floored at 8.88 — needs its own scaling treatment, not a generic continuous variable |
+| f17, f18 (Lend Line pair) | Bank's own risk assessment / credit extended | Negative correlation with risk, but reflects trust extended | TBD | High | **Combine as `average(f17,f18)`** — see Section 2b. Humps up through risk Q1-Q3 then drops sharply at Q4 (risk-based credit-line pullback at the top tier) |
+| f19 (Supplementary Accounts) | Risk amplifier (revised from original retention-bonus hypothesis) | Negative (cost/risk), specifically *within* the has_lend_line population | TBD | High | B3 explains the mechanism (near-deterministic link to has_lend_line); A2 partial correlation strengthens with f17 controlled (0.067→0.183); monotonic rise across risk quartiles (1.628→1.956) |
+| f20 (Active Charge Cards) | Weak independent signal | Slight positive (unclear) | TBD | Low | Mostly useful for explaining the f19 mismatch mechanism (B3), not much independent signal of its own |
+| f21 (Rewards Redeemed) | Positive engagement, independent of f4 | Positive | TBD | High | Confirmed independent of f4 (sign flips under Spearman); declines monotonically with risk quartile (43,971→17,283) |
+| f22 (Emails Opened) | Engagement proxy — direction needs care | Positive, but **rises with risk quartile** (3.2→4.8), opposite of most other engagement markers | TBD | Medium | Unlike f12/f13-16/f21, f22 does not decline with risk — possibly collections-related communications inflate opens for risky accounts; needs a dedicated look before treating as a simple "engaged=safe" signal |
+| f23 (Emails Clicked) | Weak, mostly structural | Positive (weak) | TBD | Low | 87.8% structural-zero (Section B); roughly flat across risk quartiles |
 
 ## 6. Formula Version History
 | Version | Formula/logic summary | Public LB score | Notes on what changed vs. previous |
@@ -95,11 +137,11 @@ Last updated: 2026-07-08 01:14 IST (Part 1 follow-up #3 — row-level deep dive 
 ## 7. Open Questions / Unresolved Items
 | Question | Status | Owner (human/CC) |
 |---|---|---|
-| f2/f3 binary-flag inconsistency: 54,205 rows (10.8%) have a Collection call (f3=1) with no Cancellation call (f2=0) — data error, or are these genuinely independent signals (e.g. proactive collections outreach unrelated to a customer-initiated cancellation call)? | Open | Human |
-| f17 vs f18 subset violation: 36.5% of overlapping rows have Consumer Lend Line (f18) > Total Lend Line (f17). Which column is authoritative, and should f18 be capped at f17? | Open | Human |
+| ~~f2/f3 binary-flag inconsistency: 54,205 rows (10.8%) have a Collection call (f3=1) with no Cancellation call (f2=0) — data error, or are these genuinely independent signals?~~ | **Resolved (2026-07-08):** genuine, distinct high-risk segment — B1's 2x2 test shows this quadrant has 8.2x the baseline risk score, the highest of all 4 quadrants. Not a data artifact | Human/CC |
+| f17 vs f18 subset violation: 36.5% of overlapping rows have Consumer Lend Line (f18) > Total Lend Line (f17). Which column is authoritative? | **Partially resolved** — combination method decided (B2: use average, not max, see Section 2b), but the underlying definitional question of *why* f18 sometimes exceeds f17 is still open | Human |
 | 97 cross-feature duplicate rows (excluding `id`): keep as-is, or investigate as synthetic/padded records? | Open | Human |
-| ~2.6% of rows sit exactly at the max value in every continuous column (35% for f16) — should Part 2 treat these as censored/capped (e.g. a `*_at_cap` flag) rather than as ordinary large values? | Open | Human + CC |
-| f19 (Supplementary Accounts) > f20 (Active Charge Cards) in 42% of rows — is this expected (multiple supplementary cardholders per active account) or worth flagging? | Open, leaning "expected" | Human |
+| ~2.6% of rows sit exactly at the max value in every continuous column (35% for f16) — should Part 2 treat these as censored/capped (e.g. a `*_at_cap` flag) rather than as ordinary large values? | **Narrowed (2026-07-08)** — C1 confirms customers inside any at-cap band can still be meaningfully differentiated by other variables, so a coarse tie isn't required; A4 confirms the capping is deliberate per-column-group clipping, not organic. Remaining question: does the *cap itself* (as opposed to just needing a tiebreaker) still warrant a `*_at_cap` flag for Part 2? | Open | Human + CC |
+| ~~f19 (Supplementary Accounts) > f20 (Active Charge Cards) in 42% of rows — is this expected or worth flagging?~~ | **Resolved (2026-07-08):** near-deterministic — 99.66% of has_lend_line=1 customers show the mismatch vs 1.42% of has_lend_line=0 customers. Real product-structure pattern (f19 likely counts supplementary users across all products including lending; f20 only counts charge cards), not a data-generation quirk | Human/CC |
 | Should f1, f4, f6, f8, f9, f11, f21 be log-transformed before standardization, given skew 1.4–2.8? | Open | CC (Part 2) |
 | How should f16 (Entertainment Credit Used) be treated given its unusual 35%-at-cap / floor-at-8.88 behavior? | Open | CC (Part 2) |
 | ~~Is the f6-f10-vs-f5 gap a scale/window mismatch or an outlier artifact?~~ | **Resolved (2026-07-07):** neither — row-level ratio spans orders of magnitude (median 10.6x, range up to 14.4M x) with only 3.84% of rows roughly 1:1; the gap is pervasive across the whole distribution, confirming f6–f10 are simply unrelated to f5 for every customer, not a fixed-ratio mismatch or a tail-driven artifact | CC (Part 2) |
@@ -109,6 +151,9 @@ Last updated: 2026-07-08 01:14 IST (Part 1 follow-up #3 — row-level deep dive 
 | Should `wallet_gap_flag` (high f6-f10, low f5 — "Segment A" from the 2026-07-08 share-of-wallet test) become a formal Part 2 opportunity-signal feature? Segment A is low-risk and rewards-engaged like big spenders, but modest on this card's own Total Spend. **Row-level deep dive (2026-07-08) narrows this to primarily an f7 (Other Spend)/f6 (Airlines) phenomenon, with weak "other card" corroboration** — should the flag be redefined using only f6+f7 rather than the full f6-f10 sum? | Open | Human |
 | What IS f7 (Other Spend) actually measuring, given it drives 65% of the f6-f10-vs-f5 gap on its own, correlates moderately with Amex's own rewards variables (not external-card proxies), and has the widest range/most negative values of any spend column? Worth a dedicated investigation before using it in Part 2 | Open | CC (Part 2) |
 | f19 vs f11 direct test (2026-07-08) confirms risk rises with more supplementary accounts (+55.5% from f19=1 to f19=4), alongside cancellation rate — does this fully replace the original "retention bonus" framing with a risk-amplifier one in the Section 5 weight table, or should f19 get a small offsetting positive term for something else (e.g. lifetime value via f4/f21, which were also higher in Section 4's earlier f19 checks)? | Open | Human |
+| **NEW (2026-07-08):** exact mechanism for downweighting f3 given f11 already prices in 34.7% of it (A1) — residualize f3 on f11, drop f3 entirely and trust f11, or use f3 only within the specific high-risk quadrant identified in B1? | Open | Human + CC (Part 2) |
+| **NEW (2026-07-08):** f22 (Emails Opened) rises *with* risk quartile (3.2→4.8), the opposite direction from every other engagement marker (f12, f13-16, f21 all decline with risk). Is this collections-related communication inflating opens for risky accounts, or a genuine engagement signal that behaves differently from the rest? Needs a dedicated look before treating f22 as a simple "engaged=safe" input | Open | CC (Part 2) |
+| **NEW (2026-07-08):** 97 duplicate rows, f16's unusual bounded behavior, and the log-transform question (Section 3) remain unresolved — still pending from earlier rounds, listed here for visibility before formula construction | Open | Human/CC |
 
 ## 8. Rejected Approaches
 | Approach | Why rejected | Could revisit in Part 2? |
@@ -146,3 +191,78 @@ Last updated: 2026-07-08 01:14 IST (Part 1 follow-up #3 — row-level deep dive 
 | Is f6-f10 just arbitrary synthetic noise, orthogonal to everything but itself? | All five consistently top-correlate with Amex's own f4 (Rewards Balance) and f21 (Rewards Redeemed) at 0.22-0.35, not with the "other card" proxies above | **No — real structure exists, but it points to Amex's own rewards ecosystem, not to competitor-card spend** |
 
 **Overall verdict:** the original "share of wallet at other issuers" story is **not well supported** once tested at the row level — the "other card" proxies don't corroborate it, and the strongest external correlation (to Amex's own rewards variables) points somewhere else entirely. What *does* survive, robustly: (1) f7 (Other Spend) — and secondarily f6 (Airlines) — is a real, structured signal, not noise or a uniform property of f6-f10; (2) the low-risk profile of the "high f6-f10, low f5" segment is genuine and behaviorally validated, not a capping artifact. **Revised hypothesis for Part 2:** f7/f6 more likely reflect a rewards-program-linked spend or engagement measure, structurally distinct from f5's Total Spend definition — and the segment they identify is a real low-risk, rewards-engaged customer group worth using, but the "money is going to a competitor card" narrative should be dropped in favor of "differently-defined/differently-windowed spend within Amex's own ecosystem" pending further investigation into f7 specifically (see Section 7 open question).
+
+### 9c. Final-Pass Wrap-up — 2026-07-08 (Group A-D validation checks)
+The tenure-confound check (A2) and the f3/f11 redundancy check (A1) were the two results most likely to overturn prior hypotheses. Neither did, but both **sharpened** things considerably: no tenure confound was found (the benefit-usage and f19 findings are robust to the best available proxy, and the f19 finding actually strengthens), while the f3/f11 regression revealed a real, substantial risk of double-counting that wasn't previously quantified (f3 explains 34.7% of f11's variance alone). The f2/f3 2x2 segmentation (B1) and f19/f20 mismatch check (B3) both fully resolved open definitional questions that had been sitting since Section 1/C — both turned out to be genuine, well-explained patterns (a real high-risk segment; a near-deterministic product-structure artifact), not data errors. No behavioral hypothesis from Section 9/9a was overturned by this round — all findings either held or were newly explained mechanistically.
+
+## 10. Segment-Level Summary Table — Mean of Every Variable by Risk Score Quartile (2026-07-08)
+Backbone reference for Part 2 conditional logic (e.g. "does spend still look positive within the high-risk group"). Computed on `dataset_clean.csv` (imputed, flagged). Risk quartiles are zero-aware (f11 has 33% exact zeros, so Q1 = exactly zero, Q2-Q4 = terciles of the remaining positive values).
+
+| Feature | Q1 (zero risk) | Q2 | Q3 | Q4 (highest) |
+|---|---|---|---|---|
+| f1 (Revolve Balance) | 428.9 | 1,337.8 | 3,895.1 | 5,182.0 |
+| f2 (Cancellation Calls) | 0.214 | 0.249 | 0.186 | 0.028 |
+| f3 (Collection Calls) | 0.006 | 0.013 | 0.060 | **0.405** |
+| f4 (Rewards Balance) | 104,489.2 | 60,451.8 | 37,851.1 | 22,541.2 |
+| f5 (Total Spend) | 3,935.5 | 3,372.3 | 3,115.8 | 3,136.9 |
+| f6 (Airlines Spend) | 11,569.9 | 8,728.4 | 6,475.2 | 2,224.7 |
+| f7 (Other Spend) | 33,174.4 | 26,614.6 | 22,376.4 | 8,059.5 |
+| f8 (Entertainment Spend) | 1,667.3 | 1,313.7 | 1,073.4 | 390.5 |
+| f9 (Lodging Spend) | 1,899.1 | 1,401.4 | 1,075.3 | 401.4 |
+| f10 (Dining Spend) | 4,857.9 | 3,849.4 | 3,276.4 | 1,307.7 |
+| f11 (Risk Score) | 0.000 | 0.000 | 0.006 | 0.145 |
+| f12 (Login Counts) | 28.8 | 31.8 | 33.0 | 28.4 |
+| f13 (Lounge Access) | 0.617 | 0.534 | 0.424 | 0.226 |
+| f14 (Airline Credits Used) | 58.0 | 48.8 | 37.0 | 16.0 |
+| f15 (Cab Benefits) | 4.633 | 4.336 | 3.793 | 2.413 |
+| f16 (Entertainment Credit Used) | 55.6 | 53.1 | 52.9 | 44.5 |
+| f17 (Total Lend Line) | 10,431.0 | 10,959.8 | 11,562.2 | 7,021.4 |
+| f18 (Consumer Lend Line) | 8,937.9 | 9,122.3 | 9,465.3 | 5,707.1 |
+| f19 (Supplementary Accounts) | 1.628 | 1.784 | 1.918 | 1.956 |
+| f20 (Active Charge Cards) | 1.130 | 1.212 | 1.232 | 1.227 |
+| f21 (Rewards Redeemed) | 43,971.2 | 30,386.8 | 23,733.7 | 17,282.9 |
+| f22 (Emails Opened) | 3.203 | 3.273 | 3.826 | **4.779 (rises with risk — flagged, Section 7)** |
+| f23 (Emails Clicked) | 0.154 | 0.158 | 0.179 | 0.151 |
+| has_rewards_program | 0.653 | 0.462 | 0.394 | 0.352 |
+| has_lend_line | 0.361 | 0.391 | 0.450 | 0.486 |
+| has_consumer_lend_line | 0.333 | 0.358 | 0.411 | 0.445 |
+| spend_breakdown_available | 0.882 | 0.849 | 0.811 | 0.478 |
+| has_email_on_file | 0.774 | 0.789 | 0.825 | 0.873 |
+
+**Notable non-monotonic patterns worth remembering when writing conditional logic:** f2 peaks at Q2-Q3 then collapses at Q4 (the highest-risk tier is dominated by f3, not f2 — consistent with B1's 2x2 finding). f17/f18 hump up through Q3 then drop sharply at Q4 (risk-based credit-line pullback at the top tier). f12 and f20 are both roughly flat/humped rather than monotonic. f22 is the only engagement-family variable that *rises* with risk instead of falling.
+
+## 11. Final Feature List — Formula Input Set (2026-07-08)
+30 inputs, replacing the raw 23-column dataset as Part 2's actual formula input list. f17/f18 are superseded by `lend_exposure` (kept individually available only for inspecting subset-violation cases, per Section 7). Three experimental features need Human sign-off before formal adoption (marked below).
+
+| Feature | Role / Note |
+|---|---|
+| f1 | Revolve Balance — risk cost, non-linear/accelerating treatment recommended (Spearman 0.58 vs f11) |
+| f2 | Cancellation Calls — weak/context signal, keep |
+| f3 | Collection Calls — **keep but must be downweighted/residualized against f11** (explains 34.7% of its variance) |
+| f4 | Rewards Points Balance — positive engagement, independent of f21 |
+| f5 | Total Spend — core revenue metric |
+| f6 | Airlines Spend — rewards-linked engagement, redundant w/ f9 (flagged not dropped) |
+| f7 | Other Spend — rewards-linked engagement, **needs dedicated investigation before use** (drives 65% of the f6-f10 gap) |
+| f8 | Entertainment Spend — rewards-linked engagement, redundant w/ f10 (flagged not dropped) |
+| f9 | Lodging Spend — rewards-linked engagement, redundant w/ f6 (flagged not dropped) |
+| f10 | Dining Spend — rewards-linked engagement, redundant w/ f7,f8,f9 (flagged not dropped) |
+| f11 | Risk Score — core risk input, primary driver |
+| f12 | Login Counts — engagement proxy, component of `engagement_score` |
+| f13 | Lounge Access — safety/engagement marker |
+| f14 | Airline Credits Used — safety/engagement marker |
+| f15 | Cab Benefits — safety/engagement marker |
+| f16 | Entertainment Credit Used — safety/engagement marker, **needs bounded/special scaling** (35% at-cap, floor 8.88) |
+| f19 | Supplementary Accounts — risk amplifier (revised), interpret jointly with `has_lend_line` |
+| f20 | Active Charge Cards — weak independent signal |
+| f21 | Rewards Redeemed — positive engagement, independent of f4 |
+| f22 | Emails Opened — engagement proxy, but **direction needs verification** (rises with risk, unlike other engagement vars) |
+| f23 | Emails Clicked — weak, mostly structural zero |
+| `lend_exposure` | = average(f17, f18) — replaces both raw Lend Line columns (B2: avg beats max on residual corr w/ f11) |
+| `has_rewards_program` | Structural-zero flag for f4/f21 |
+| `has_lend_line` | Structural-zero flag for f17/f18 |
+| `has_consumer_lend_line` | Structural-zero flag for f18 specifically |
+| `spend_breakdown_available` | Structural-zero flag for f6-f10 |
+| `has_email_on_file` | Structural-zero flag for f22 |
+| `engagement_score` **(experimental — needs sign-off)** | z-score composite of f12+f22+benefit_usage_count — silent-churn signal, 81.5% risk gap validated |
+| `benefit_usage_count` **(experimental — needs sign-off)** | count of {f13,f14,f15,f16} used at all — input to `engagement_score` |
+| `wallet_gap_flag` **(experimental, needs redefinition + sign-off)** | was (f6_f10_sum tercile=High)&(f5 tercile=Low) — Section 7 suggests redefining using f6+f7 specifically, not the full f6-f10 sum |
