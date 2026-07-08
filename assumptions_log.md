@@ -1,5 +1,5 @@
 # Amex Profitability Model — Assumptions & Decisions Log
-Last updated: 2026-07-08 02:02 IST (Part 1 final-pass — Groups A-D: redundancy resolution, definitional closures, formula-ready feature list)
+Last updated: 2026-07-08 10:53 IST (Part 1 final gate — Section 12: row-level validation of every locked-in hypothesis)
 
 > **Maintenance rule:** this file is append-only history — never delete or rewrite a past row. When a decision changes, add a new row noting the supersession and update the "Last updated" timestamp above. Every script run, threshold choice, or finding that Part 2 might rely on gets logged here before moving on.
 
@@ -266,3 +266,63 @@ Backbone reference for Part 2 conditional logic (e.g. "does spend still look pos
 | `engagement_score` **(experimental — needs sign-off)** | z-score composite of f12+f22+benefit_usage_count — silent-churn signal, 81.5% risk gap validated |
 | `benefit_usage_count` **(experimental — needs sign-off)** | count of {f13,f14,f15,f16} used at all — input to `engagement_score` |
 | `wallet_gap_flag` **(experimental, needs redefinition + sign-off)** | was (f6_f10_sum tercile=High)&(f5 tercile=Low) — Section 7 suggests redefining using f6+f7 specifically, not the full f6-f10 sum |
+
+## 12. Row-Level Validation — 2026-07-08 (the final gate before formula construction)
+**Why this matters:** every hypothesis locked in through Sections 4-9 was validated on aggregates — correlations, segment means, quartile tables. A hypothesis can be true on average while a large minority of individual customers contradict it entirely. Since the formula scores 500K individual rows, not segment averages, what matters is the row-level agreement rate and what the exceptions look like, not just the sign of a correlation.
+
+### 12a. Consolidated Summary Table
+| Hypothesis | Aggregate strength | Row-level agreement % | Contradiction count | Recommended formula treatment |
+|---|---|---|---|---|
+| f3 (Collection Calls) ~ f11 (Risk) redundancy | R²=0.347 (f3 alone) | **96.76%** (f3=1 → above median f11) | 1,751 of 54,019 (**3.24%**) | Near-full redundancy in the f3=1 direction — downweight/drop f3 if f11 present, or use only as a conditional override for the rare exception |
+| f1 (Revolve) × f11 (Risk) | Spearman 0.577 | **85.91%** (top-quartile f1 → top-half f11) | 17,527 of 124,373 (**14.09%**) | Strong enough for moderate-to-full weight as an accelerating risk cost; dampen slightly for the ~14% high-revolve-low-risk exceptions |
+| Benefit usage (f13-16) = stability | Joint R²=0.083 w/ f11; negative corr w/ f2,f3 | 53.28% (compound: low risk AND no cancel) | 90,791 of 193,269 (**46.72%**) | **Partial/mild weight only, or conditional clause** — too weak at row level for a large blanket discount |
+| f19 (Supplementary Accounts) = risk amplifier | +55.5% mean risk shift (f19=1→4) | 59.83% vs 47.41% baseline | 41,430 of 103,137 (**40.17%**) | **Conditional/mild weight** — real lift over baseline but too weak individually for a strong standalone amplifier; combine with a confirming variable (e.g. lend exposure) first |
+| Silent churn (engagement predicts risk among f2=0) | 81.5% mean risk gap (quartile means) | 60.83% vs 47.16% (top-quartile engagement) | 41,603 of 106,218 (**39.17%**) | **Conditional only** — the most novel hypothesis is also one of the weakest at row level; must not be a standalone penalty, needs a confirming second signal before triggering any adjustment |
+| Wallet-gap segment (redefined f6+f7, low f5) = low risk | Segment mean f11=0.0036 vs baseline 0.0151 (4.3x lower) | 65.02% vs 50% baseline | 15,624 of 44,648 (**34.98%**) | **Conditional/mild positive signal** (upsell candidate flag) — real lift but a third of the segment is still high-risk; not a low-risk guarantee |
+| Lend exposure (avg f17,f18) inversely related to risk | Pearson -0.32 | N/A (tested the specific danger case directly) | **4,448 of 190,556** has-lend-line customers (2.33%) have BOTH top-quartile exposure AND top-quartile risk | Full weight for the general inverse relationship, **plus an explicit override/multiplier for the 2.33% high-exposure+high-risk tail** — highest real-dollar-risk accounts, must not be averaged away |
+
+**Pattern:** the two hypotheses built on binary/near-binary flags with a direct behavioral link to risk (f3, f1) hold up strongly at the row level (3-14% contradiction). The three "softer," aggregate-composite hypotheses (benefit usage, f19, silent churn) all cluster in a **39-47% contradiction band** — every one of them is real (all beat baseline) but **none is strong enough to encode as a standalone weight**; all three need to become conditional clauses, not independent terms. Lend exposure is the one case where the *general* relationship is strong but a specific, identifiable minority (2.33%) needs an explicit exception rule rather than dampening.
+
+### 12b. Sampled Contradiction Rows — the Three Highest-Disagreement Hypotheses
+**Benefit usage (46.72% contradiction)** — heavy benefit users (≥3 of 4 benefits used) who are still above-median risk or still called to cancel. Sample:
+
+| f13 | f14 | f15 | f16 | f11 | f2 | f3 |
+|---|---|---|---|---|---|---|
+| 1.0 | 158.40 | 2.0 | 64.40 | 0.0341 | 0 | 0 |
+| 0.0 | 194.00 | 8.0 | 63.76 | 0.0026 | 0 | 0 |
+| 2.0 | 82.75 | 6.0 | 64.40 | 0.0297 | 0 | 0 |
+| 2.0 | 71.40 | 10.0 | 64.40 | 0.0382 | 0 | 0 |
+| 1.0 | 190.00 | 10.0 | 63.76 | 0.0588 | 0 | 0 |
+| 0.0 | 67.85 | 9.0 | 48.30 | 0.0102 | 1 | 0 |
+
+These are customers using nearly every benefit heavily, yet still carrying meaningfully elevated risk (up to 0.059, well above the 0.0006 population median) — benefit usage clearly isn't a reliable individual-level substitute for actual risk assessment.
+
+**f19 Supplementary Accounts (40.17% contradiction)** — f19≥3 customers who are actually low-risk (f11=0). Sample:
+
+| f19 | f20 | f11 | f17 | f18 |
+|---|---|---|---|---|
+| 4.0 | 2.0 | 0.0 | 52,736 | 27,248 |
+| 3.0 | 1.0 | 0.0 | 20,097 | 19,691 |
+| 4.0 | 1.0 | 0.0 | 61,886 | 53,156 |
+| 4.0 | 2.0 | 0.0 | 25,250 | 23,750 |
+| 3.0 | 1.0 | 0.0 | 20,160 | 19,776 |
+| 4.0 | 1.0 | 0.0 | 58,580 | 38,986 |
+| 4.0 | 1.0 | 0.0 | 50,078 | 50,589 |
+
+Several of these large-household customers also carry substantial lend lines (₹50-62K) — the largest, most "amplified" households by the f19 story are, in these cases, exactly zero-risk, not amplified-risk.
+
+**Silent churn (39.17% contradiction)** — bottom-quartile engagement, non-calling customers who are actually low-risk. Sample:
+
+| f12 (logins) | f22 (opens) | benefit_usage_count | engagement_score | f11 |
+|---|---|---|---|---|
+| 8.0 | 0.0 | 2 | -1.844 | 0.00051 |
+| 7.0 | 0.0 | 1 | -2.845 | 0.00000 |
+| 5.0 | 0.0 | 2 | -1.946 | 0.00074 |
+| 12.0 | 0.0 | 1 | -2.676 | 0.00009 |
+| 7.0 | 1.0 | 2 | -1.640 | 0.00000 |
+| 3.0 | 1.0 | 1 | -2.743 | 0.00017 |
+
+These are customers who are simply low-touch by disposition — rarely log in, don't open emails, don't use benefits much — but show no elevated risk at all. Applying the silent-churn hypothesis to these individuals would incorrectly flag naturally quiet-but-healthy customers as at-risk.
+
+### 12c. What This Changes for Part 2
+No hypothesis was falsified outright — every one of the seven beats its baseline in the expected direction. But the row-level test reclassifies **three of seven** from "candidate independent weight" to "conditional clause only" (benefit usage, f19, silent churn), confirms **two of seven** as safe for real independent weight (f3 — appropriately downweighted per Section 2b, and f1), and identifies **one explicit tail case** requiring a dedicated override rule (the 2.33% high-exposure/high-risk lend segment) rather than relying on the general inverse correlation. This is the direct bridge from "what we found" to "how to encode it" — Section 5's weight-tier column can now be filled in as: f3, f1 → real weight; f19, benefit usage, silent churn, wallet-gap → conditional/damped; lend exposure → real weight + explicit exception rule.
