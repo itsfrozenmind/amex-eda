@@ -1,5 +1,5 @@
 # Amex Profitability Model — Assumptions & Decisions Log
-Last updated: 2026-07-08 10:53 IST (Part 1 final gate — Section 12: row-level validation of every locked-in hypothesis)
+Last updated: 2026-07-08 11:35 IST (Part 2 kickoff — Section 13: v1 formula calibration evidence)
 
 > **Maintenance rule:** this file is append-only history — never delete or rewrite a past row. When a decision changes, add a new row noting the supersession and update the "Last updated" timestamp above. Every script run, threshold choice, or finding that Part 2 might rely on gets logged here before moving on.
 
@@ -132,7 +132,7 @@ Last updated: 2026-07-08 10:53 IST (Part 1 final gate — Section 12: row-level 
 ## 6. Formula Version History
 | Version | Formula/logic summary | Public LB score | Notes on what changed vs. previous |
 |---|---|---|---|
-| *(not yet started — no scoring formula has been written; Part 1 was EDA/cleaning only)* | | | |
+| v1 (2026-07-08) | `Base = 0.35·pctrank(f5) − 0.35·pctrank(f11)² − 0.15·pctrank(f1) + 0.15·pctrank(lend_exposure)`, plus 3 additive modifiers: M1 (lend-exposure override, −0.20 if pctrank(lend_exposure)≥0.75 AND pctrank(f11)≥0.75), M2 (benefit-usage discount, +0.05×benefit_usage_count/4 if f11<median), M3 (f19 risk amplifier, −0.05 if f19≥3 AND pctrank(lend_exposure)≥0.5). `Score = Base + M1 + M2 + M3` | Not yet submitted | First fully-specified formula. Silent churn / engagement_score and the wallet-gap bonus were considered but explicitly excluded from v1, held for v2. See Section 13 for calibration evidence and recommended coefficient updates |
 
 ## 7. Open Questions / Unresolved Items
 | Question | Status | Owner (human/CC) |
@@ -326,3 +326,41 @@ These are customers who are simply low-touch by disposition — rarely log in, d
 
 ### 12c. What This Changes for Part 2
 No hypothesis was falsified outright — every one of the seven beats its baseline in the expected direction. But the row-level test reclassifies **three of seven** from "candidate independent weight" to "conditional clause only" (benefit usage, f19, silent churn), confirms **two of seven** as safe for real independent weight (f3 — appropriately downweighted per Section 2b, and f1), and identifies **one explicit tail case** requiring a dedicated override rule (the 2.33% high-exposure/high-risk lend segment) rather than relying on the general inverse correlation. This is the direct bridge from "what we found" to "how to encode it" — Section 5's weight-tier column can now be filled in as: f3, f1 → real weight; f19, benefit usage, silent churn, wallet-gap → conditional/damped; lend exposure → real weight + explicit exception rule.
+
+## 13. v1 Formula Calibration Evidence — 2026-07-08
+Quantitative validation of the 6 open decisions in the exact v1 spec (Section 6), computed on the real 500K-row dataset (`df_clean`, imputed). All transforms computed once as spec'd: `pctrank(f5)`, `pctrank(f1)`, `pctrank(f11)`, `pctrank(lend_exposure)` where `lend_exposure = mean(f17,f18)`.
+
+### 13a. Percentile rank vs z-score
+Both transforms collapse identically at each column's cap (all capped rows tie — 1 distinct value either way; e.g. f11's 12,837 capped rows give exactly 1 z-score and 1 pctrank). The real difference is in the top 10%: pctrank's span is fixed at ~0.087-0.098 for every variable (f5, f1, f11, lend_exposure alike), while z-score's span varies 1.17-2.57 depending on each variable's skew. **Verdict: pctrank is the right choice for v1** — a fixed weight (e.g. 0.35) means the same thing across all four terms under pctrank, whereas under z-score the same weight would swing the score by more than 2x depending on which variable it's multiplying (0.35×1.17≈0.41 for f5's top decile vs 0.35×2.57≈0.90 for f11's). Switching to z-score would silently distort the intended weight ratios.
+
+### 13b. Risk penalty exponent — decile-level fit
+Clean equal-sized deciles (tie-broken via `rank(method='first')`) show the pullback in mean `lend_exposure` is flat/noisy through decile 8 (most of that range is tied at f11=0, so ordering is arbitrary), then drops sharply: 55.0% of the total D1→D10 pullback happens between decile 8 and 9 alone, reaching 100% by decile 10. Fitting linear/squared/cubic candidates against the actual per-decile pullback shape (SSE): linear=25,791, squared=12,764, **cubic=7,607 (best fit)**. Even cubic undershoots the real sharpness (predicts 71.6% at decile 9 vs actual 55%, meaning the true curve is closer to a step/threshold function than any smooth power curve tested). **Recommendation: change the risk-penalty exponent from ^2 to ^3** — evidence-based improvement; a threshold/step function is a candidate for v2 if tighter fidelity is needed.
+
+### 13c. M1 (lend-exposure override) — real effect on top-20% selection
+Danger zone recomputed exactly per spec (pctrank(lend_exposure)≥0.75 AND pctrank(f11)≥0.75) on the full 500K population: **21,505 rows** — larger than Section 12's 4,448 because that figure was computed only among has_lend_line=1 customers (~190K), while the v1 spec computes pctrank "once, on the full 500K rows," which shifts the 75th-percentile threshold down. Restricting to the has_lend_line=1 subgroup for a like-for-like comparison gives 4,805 rows, consistent with Section 12's scale. **Under both population definitions, 0 danger-zone customers cross into the top 20% with or without M1 applied** — the squared (or, per 13b, cubic) risk penalty in Base already excludes this entire group before M1 fires. Closest miss: 0.003 below the top-20% threshold (full-population version), 0.03 below (restricted version). **M1 does zero marginal work for top-20% selection as currently used** — it may still matter for ordering within the bottom 80% (e.g. a future "worst-tier" cutoff), but isn't validated as pulling anyone out of the top 20% who wouldn't already be excluded.
+
+### 13d. M2/M3 weight derivation from row-level lift
+Precise re-verification (all figures match Section 12's rounded values): f1 anchor agreement=85.57%, lift=**35.57pts** (vs the ≈36pts estimate). Benefit usage agreement=53.28% vs population baseline of the *same compound condition* (f11<median AND f2=0) = 38.38%, lift=**14.90pts**. f19 agreement=59.81% vs baseline=47.11%, lift=**12.69pts**.
+
+Using `modifier_weight = 0.15 × (modifier_lift / f1_lift)`:
+- Benefit usage (M2): 0.15 × (14.90/35.57) = **0.0628** (vs 0.05 placeholder — meaningfully higher, +26%)
+- f19 (M3): 0.15 × (12.69/35.57) = **0.0535** (vs 0.05 placeholder — near-exact match, +7%)
+
+The original 0.05 guess for M3 was well-calibrated; M2's benefit-usage discount was somewhat underweighted relative to what its row-level lift justifies.
+
+### 13e. Wallet-gap bonus simulation (not in v1 — testing the cost/benefit of adding it)
+Using the v1 formula exactly as spec'd (Base+M1+M2+M3, no wallet-gap term), current top-20% threshold = 0.24303 (n=100,000). Adding a simulated +0.05 bonus IF (f6+f7 in top tercile) AND (f5 in bottom tercile): new threshold = 0.24435, **1,031 new entrants** to the top 20%. Of these, **0 (0.00%) have f11 above the population median** — 98.16% have f11 exactly 0, mean risk 0.000001. The customers *displaced* by the reshuffle had a slightly *higher* mean risk (0.00021) than the new entrants, meaning the bonus marginally **improves**, not degrades, the risk quality of the top-20% cohort. This is a materially cleaner result than Section 12's 34.98% segment-wide contradiction rate suggested — the specific customers who cross the threshold *because of* the bonus are a much safer, more selected slice than the wallet-gap segment as a whole. **Low-risk to add, based on this simulation.**
+
+### 13f. Final Recommended Coefficients
+| Term | v1 Placeholder | Recommended | Basis | Confidence |
+|---|---|---|---|---|
+| Revenue weight (pctrank f5) | 0.35 | **0.35 (unchanged)** | Not challenged this round | — |
+| Risk weight (pctrank f11 exponent) | ^2, weight 0.35 | **^3, weight 0.35 (exponent changed, weight unchanged)** | 13b: cubic fits the real decile pullback shape better than squared (SSE 7,607 vs 12,764) | High for the exponent change; weight itself not re-derived |
+| Revolve weight (pctrank f1) | 0.15 | **0.15 (unchanged)** | Serves as the calibration anchor for M2/M3; not independently challenged | — |
+| Lend exposure weight (pctrank lend_exposure, base term) | 0.15 | **0.15 (unchanged)** | Not challenged this round | — |
+| M1 override | −0.20 | **−0.20 (unchanged, but flagged)** | 13c: does zero marginal work for top-20% selection under current spec — kept pending a decision on whether it should target a different cutoff (e.g. bottom-tier) instead | Medium — finding is robust, but no alternative value was derived since the ask was to test effect, not re-calibrate magnitude |
+| M2 max discount (benefit usage) | 0.05 | **0.0628** | 13d: lift-derived via f1-anchor calibration (14.90pts / 35.57pts × 0.15) | High — precise re-verified inputs |
+| M3 amplifier (f19) | −0.05 | **−0.0535** | 13d: lift-derived via f1-anchor calibration (12.69pts / 35.57pts × 0.15) | High — near-exact match to placeholder, low risk in either direction |
+| Wallet-gap bonus (not in v1) | N/A | **+0.05, if adopted** | 13e: simulation shows 0% false positives among new entrants, marginal risk-quality improvement to the top-20% cohort | Medium-High for this simulation; still a v2-candidate decision, not yet in v1 |
+
+**Open items carried forward:** (1) M1's -0.20 magnitude wasn't re-derived, only tested for effect — worth a follow-up if a bottom-tier/worst-risk cutoff becomes a formula requirement. (2) The risk-penalty exponent recommendation (^3) is based on SSE fit to a still-noisy decile pattern below decile 8; a threshold/step function remains a stronger v2 candidate if more fidelity is needed. (3) Wallet-gap bonus is a clean addition per this simulation but remains a v2/sign-off decision, not yet folded into v1.
